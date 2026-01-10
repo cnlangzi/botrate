@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run unit tests
+        run: make test-coverage
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: cnlangzi/botrate
+
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run benchmarks
+        run: |
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Hot Path Performance" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '| CPUs | ns/op | QPS | Allocs |' >> $GITHUB_STEP_SUMMARY
+          echo '|------|-------|-----|--------|' >> $GITHUB_STEP_SUMMARY
+          
+          # Run benchmarks and capture output
+          make bench-all 2>&1 | tee benchmark_output.txt
+          
+          # Extract and format key metrics
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Component Performance" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '| Benchmark | 4 CPUs (ns/op) | 8 CPUs (ns/op) |' >> $GITHUB_STEP_SUMMARY
+          echo '|-----------|----------------|----------------|' >> $GITHUB_STEP_SUMMARY
+          
+          # Parse benchmark output and add to summary
+          grep -E "Benchmark(Counter|Analyzer|Allow|Blocked|Visit|Record|TestAndAdd).*-[48]" benchmark_output.txt | \
+            awk '{gsub(/Benchmark/, ""); gsub(/-[48]/, ""); split($0, a); 
+                  if(a[1] ~ /Counter/) row="Counter";
+                  else if(a[1] ~ /Analyzer/) row="Analyzer";
+                  else if(a[1] ~ /Allow/) row="Allow";
+                  else if(a[1] ~ /Blocked/) row="Blocked";
+                  else if(a[1] ~ /Visit/) row="Visit";
+                  else if(a[1] ~ /Record/) row="Record";
+                  else if(a[1] ~ /TestAndAdd/) row="TestAndAdd";
+                  printf "| %s | %s ns/op | %s ns/op |\n", row, a[2], a[3]}' >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*Note: Zero allocations (0 B/op, 0 allocs/op) indicate GC-free hot paths*" >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('benchmark_output.txt', 'utf8');
+
+            // Extract benchmark results section (skip goos/goarch/cpu lines)
+            const lines = output.split('\n');
+            const benchmarkLines = lines.filter(line =>
+              line.startsWith('Benchmark') || line.startsWith('PASS') || line.startsWith('ok')
+            );
+
+            // Build comment with raw output
+            let comment = '## Benchmark Results\n\n';
+            comment += '```\n';
+            comment += benchmarkLines.join('\n');
+            comment += '\n```\n';
+
+            // Find existing benchmark comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith('## Benchmark Results')
+            );
+
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+              console.log('Updated existing benchmark comment');
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+              console.log('Created new benchmark comment');
+            }
