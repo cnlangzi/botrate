@@ -18,6 +18,19 @@ var (
 	DefaultQueueCap      = 10000
 )
 
+// Reason represents the reason for rate limiting.
+type Reason string
+
+const (
+	// ReasonFakeBot indicates the request was blocked because
+	// the bot verification failed (fake bot or unknown status).
+	ReasonFakeBot Reason = "fake_bot"
+
+	// ReasonRateLimited indicates the request was blocked because
+	// the IP was flagged by behavior analysis.
+	ReasonRateLimited Reason = "rate_limited"
+)
+
 // Limiter provides bot-aware rate limiting.
 type Limiter struct {
 	cfg Config
@@ -65,8 +78,10 @@ func New(opts ...Option) (*Limiter, error) {
 }
 
 // Allow reports whether the request should proceed.
-// Returns true if allowed, false if blocked.
-func (l *Limiter) Allow(ua, ip string) bool {
+// Returns:
+//   - allowed: true if allowed, false if blocked
+//   - reason: the reason for blocking when allowed is false
+func (l *Limiter) Allow(ua, ip string) (allowed bool, reason Reason) {
 	// Layer 1: Bot verification
 	botResult := l.kb.Validate(ua, ip)
 
@@ -74,30 +89,35 @@ func (l *Limiter) Allow(ua, ip string) bool {
 		switch botResult.Status {
 		case knownbots.StatusVerified:
 			// Verified bot: allow without rate limit
-			return true
+			return true, ""
 		case knownbots.StatusPending:
 			// RDNS lookup failed, allow and retry verification next time
-			return true
+			return true, ""
 		case knownbots.StatusFailed, knownbots.StatusUnknown:
 			// Fake bot (failed verification) or unknown: block immediately
-			return false
+			return false, ReasonFakeBot
 		}
 	}
 
 	// Layer 2: Blocklist check (only for normal users)
 	if l.analyzer.Blocked(ip) {
 		// Behavior anomaly: apply rate limit
-		return l.allowBlocked(ip)
+		if l.allowBlocked(ip) {
+			return true, ""
+		}
+		return false, ReasonRateLimited
 	}
 
 	// Layer 3: Normal user + not blocked
 	l.analyzer.Record(ip, ua)
-	return true
+	return true, ""
 }
 
 // Wait blocks until the request is allowed or the context is canceled.
-// Returns nil if allowed, error if blocked or context canceled.
-func (l *Limiter) Wait(ctx context.Context, ua, ip string) error {
+// Returns:
+//   - err: nil if allowed, ErrLimit if blocked, or context error if canceled
+//   - reason: the reason for blocking when err is ErrLimit
+func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Reason) {
 	// Layer 1: Bot verification
 	botResult := l.kb.Validate(ua, ip)
 
@@ -105,25 +125,29 @@ func (l *Limiter) Wait(ctx context.Context, ua, ip string) error {
 		switch botResult.Status {
 		case knownbots.StatusVerified:
 			// Verified bot: no rate limit needed
-			return nil
+			return nil, ""
 		case knownbots.StatusPending:
 			// RDNS lookup failed, allow and retry verification next time
-			return nil
+			return nil, ""
 		case knownbots.StatusFailed, knownbots.StatusUnknown:
 			// Fake bot: block immediately
-			return ErrLimit
+			return ErrLimit, ReasonFakeBot
 		}
 	}
 
 	// Layer 2: Blocklist check (only for normal users)
 	if l.analyzer.Blocked(ip) {
 		// Behavior anomaly: apply rate limit
-		return l.waitBlocked(ctx, ip)
+		err = l.waitBlocked(ctx, ip)
+		if err == nil {
+			return nil, ""
+		}
+		return ErrLimit, ReasonRateLimited
 	}
 
 	// Layer 3: Normal user + not blocked
 	l.analyzer.Record(ip, ua)
-	return nil
+	return nil, ""
 }
 
 func (l *Limiter) allowBlocked(ip string) bool {

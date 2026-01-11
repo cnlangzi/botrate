@@ -2,10 +2,12 @@ package botrate
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cnlangzi/knownbots"
 	"golang.org/x/time/rate"
 )
 
@@ -66,14 +68,50 @@ func TestLimiter_New_WithOptions(t *testing.T) {
 }
 
 func TestLimiter_Allow_VerifiedBot(t *testing.T) {
-	l, err := New()
+	botDir := t.TempDir()
+	botConfDir := botDir + "/conf.d"
+	if err := os.MkdirAll(botConfDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	customBotYAML := `kind: SearchEngine
+name: testbot
+parser: txt
+ua: "TestBot"
+custom:
+  - "192.168.100.0/24"
+`
+	if err := os.WriteFile(botConfDir+"/testbot.yaml", []byte(customBotYAML), 0644); err != nil {
+		t.Fatalf("Failed to write bot config: %v", err)
+	}
+
+	kb, err := knownbots.New(knownbots.WithRoot(botDir))
+	if err != nil {
+		t.Fatalf("Failed to create knownbots validator: %v", err)
+	}
+	defer kb.Close()
+
+	l, err := New(WithKnownbots(kb))
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
 	defer l.Close()
 
-	result := l.Allow("Googlebot/2.1", "66.249.66.1")
-	_ = result
+	allowed, reason := l.Allow("TestBot/1.0", "192.168.100.42")
+	if !allowed {
+		t.Error("verified bot should be allowed")
+	}
+	if reason != "" {
+		t.Errorf("reason should be empty for allowed request, got %s", reason)
+	}
+
+	allowed, reason = l.Allow("TestBot/1.0", "10.0.0.1")
+	if allowed {
+		t.Error("fake bot should be blocked")
+	}
+	if reason != ReasonFakeBot {
+		t.Errorf("expected reason %s, got %s", ReasonFakeBot, reason)
+	}
 }
 
 func TestLimiter_Wait_VerifiedBot(t *testing.T) {
@@ -83,7 +121,7 @@ func TestLimiter_Wait_VerifiedBot(t *testing.T) {
 	}
 	defer l.Close()
 
-	err = l.Wait(context.Background(), "Googlebot/2.1", "66.249.66.1")
+	err, _ = l.Wait(context.Background(), "Googlebot/2.1", "66.249.66.1")
 	_ = err
 }
 
@@ -99,7 +137,7 @@ func TestLimiter_Wait_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = l.Wait(ctx, "Mozilla/5.0", "192.168.1.1")
+	err, _ = l.Wait(ctx, "Mozilla/5.0", "192.168.1.1")
 
 	if err != nil && err != context.Canceled && err != ErrLimit {
 		t.Errorf("expected nil, context.Canceled, or ErrLimit, got %v", err)
@@ -116,7 +154,7 @@ func TestLimiter_Allow_NormalUser(t *testing.T) {
 	}
 	defer l.Close()
 
-	allowed := l.Allow("Mozilla/5.0", "192.168.1.1")
+	allowed, _ := l.Allow("Mozilla/5.0", "192.168.1.1")
 
 	if !allowed {
 		t.Error("normal user should be allowed")
@@ -130,7 +168,7 @@ func TestLimiter_Allow_BotLike(t *testing.T) {
 	}
 	defer l.Close()
 
-	allowed := l.Allow("Python-urllib/3.11", "192.168.1.1")
+	allowed, _ := l.Allow("Python-urllib/3.11", "192.168.1.1")
 	_ = allowed
 }
 
@@ -144,14 +182,14 @@ func TestLimiter_Allow_BlacklistedIP(t *testing.T) {
 	}
 	defer l.Close()
 
-	allowed := l.Allow("Mozilla/5.0", "192.168.1.1")
+	allowed, _ := l.Allow("Mozilla/5.0", "192.168.1.1")
 	if !allowed {
 		t.Error("first request should be allowed")
 	}
 
 	time.Sleep(time.Millisecond * 200)
 
-	allowed = l.Allow("Mozilla/5.0", "192.168.1.1")
+	allowed, _ = l.Allow("Mozilla/5.0", "192.168.1.1")
 	_ = allowed
 }
 
@@ -165,7 +203,7 @@ func TestLimiter_Wait_NormalUser(t *testing.T) {
 	}
 	defer l.Close()
 
-	err = l.Wait(context.Background(), "Mozilla/5.0", "192.168.1.1")
+	err, _ = l.Wait(context.Background(), "Mozilla/5.0", "192.168.1.1")
 
 	if err != nil {
 		t.Errorf("normal user should not return error, got %v", err)
@@ -184,7 +222,7 @@ func TestLimiter_Wait_BotLike(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
 	defer cancel()
 
-	_ = l.Wait(ctx, "Python-urllib/3.11", "192.168.1.1")
+	_, _ = l.Wait(ctx, "Python-urllib/3.11", "192.168.1.1")
 }
 
 func TestLimiter_Close(t *testing.T) {
@@ -211,7 +249,9 @@ func TestLimiter_Allow_ManyRequests(t *testing.T) {
 		ip := "192.168.1." + string(rune('0'+i%256))
 		ua := "UserAgent/" + string(rune('A'+i%26))
 
-		if !l.Allow(ua, ip) {
+		allowed, _ := l.Allow(ua, ip)
+
+		if !allowed {
 			t.Errorf("request %d should be allowed", i)
 		}
 	}
@@ -224,7 +264,8 @@ func TestLimiter_Allow_IPv6(t *testing.T) {
 	}
 	defer l.Close()
 
-	if !l.Allow("Mozilla/5.0", "2001:0db8:85a3:0000:0000:8a2e:0370:7334") {
+	allowed, _ := l.Allow("Mozilla/5.0", "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+	if !allowed {
 		t.Error("IPv6 request should be allowed")
 	}
 }
@@ -236,7 +277,8 @@ func TestLimiter_Allow_EmptyUserAgent(t *testing.T) {
 	}
 	defer l.Close()
 
-	if !l.Allow("", "192.168.1.1") {
+	allowed, _ := l.Allow("", "192.168.1.1")
+	if !allowed {
 		t.Error("empty UA should be allowed")
 	}
 }
@@ -248,7 +290,8 @@ func TestLimiter_Allow_EmptyIP(t *testing.T) {
 	}
 	defer l.Close()
 
-	if !l.Allow("Mozilla/5.0", "") {
+	allowed, _ := l.Allow("Mozilla/5.0", "")
+	if !allowed {
 		t.Error("empty IP should be allowed")
 	}
 }
@@ -266,8 +309,8 @@ func TestLimiter_WithKnownbots(t *testing.T) {
 	}
 	defer l2.Close()
 
-	_ = l1.Allow("Googlebot/2.1", "66.249.66.1")
-	_ = l2.Allow("Googlebot/2.1", "66.249.66.1")
+	_, _ = l1.Allow("Googlebot/2.1", "66.249.66.1")
+	_, _ = l2.Allow("Googlebot/2.1", "66.249.66.1")
 }
 
 func TestLimiter_RateLimitPersistence(t *testing.T) {
@@ -281,8 +324,8 @@ func TestLimiter_RateLimitPersistence(t *testing.T) {
 	}
 	defer l.Close()
 
-	_ = l.Allow("Python-urllib/3.11", "192.168.1.1")
-	_ = l.Allow("Python-urllib/3.11", "192.168.1.1")
+	_, _ = l.Allow("Python-urllib/3.11", "192.168.1.1")
+	_, _ = l.Allow("Python-urllib/3.11", "192.168.1.1")
 }
 
 func TestLimiter_DifferentBots(t *testing.T) {
@@ -298,7 +341,7 @@ func TestLimiter_DifferentBots(t *testing.T) {
 	}
 
 	for _, bot := range bots {
-		_ = l.Allow(bot, "66.249.66.1")
+		_, _ = l.Allow(bot, "66.249.66.1")
 	}
 }
 
@@ -334,7 +377,7 @@ func TestLimiter_BotScenarios(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			allowed := l.Allow(tc.ua, tc.ip)
+			allowed, _ := l.Allow(tc.ua, tc.ip)
 			_ = allowed
 		})
 	}
@@ -355,7 +398,7 @@ func TestLimiter_InvalidIPFormat(t *testing.T) {
 	}
 
 	for _, ip := range invalidIPs {
-		_ = l.Allow("Mozilla/5.0", ip)
+		_, _ = l.Allow("Mozilla/5.0", ip)
 	}
 }
 
@@ -368,7 +411,8 @@ func TestLimiter_LongUserAgent(t *testing.T) {
 
 	longUA := strings.Repeat("Mozilla/5.0 ", 1000)
 
-	if !l.Allow(longUA, "192.168.1.1") {
+	allowed, _ := l.Allow(longUA, "192.168.1.1")
+	if !allowed {
 		t.Error("long UA should be allowed")
 	}
 }
@@ -381,9 +425,11 @@ func TestLimiter_LongPath(t *testing.T) {
 	defer l.Close()
 
 	longPath := "/" + strings.Repeat("a", 10000)
+	_, _ = l.Allow("Mozilla/5.0", "192.168.1.1")
 	_ = longPath
 
-	if !l.Allow("Mozilla/5.0", "192.168.1.1") {
+	allowed, _ := l.Allow("Mozilla/5.0", "192.168.1.1")
+	if !allowed {
 		t.Error("long path should be allowed")
 	}
 }
