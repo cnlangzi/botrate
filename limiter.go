@@ -2,7 +2,6 @@ package botrate
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -116,7 +115,7 @@ func (l *Limiter) Allow(ua, ip string) (allowed bool, reason Reason) {
 
 // Wait blocks until the request is allowed or the context is canceled.
 // Returns:
-//   - err: nil if allowed, ErrLimit if blocked, or context error if canceled
+//   - err: nil if allowed, ErrLimit if blocked or context canceled
 //   - reason: the reason for blocking when err is ErrLimit
 func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Reason) {
 	// Layer 1: Bot verification
@@ -143,11 +142,9 @@ func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Re
 		if err == nil {
 			return nil, ""
 		}
-		if errors.Is(err, ErrLimit) {
-			return ErrLimit, ReasonRateLimited
-		}
-		// For context cancellation / timeout, propagate original error
-		return err, ""
+		// Wait returns error only when rate limited or context canceled.
+		// Both cases mean the request was not allowed.
+		return ErrLimit, ReasonRateLimited
 	}
 
 	// Layer 3: Normal user + not blocked
