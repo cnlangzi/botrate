@@ -142,7 +142,11 @@ func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Re
 		if err == nil {
 			return nil, ""
 		}
-		return ErrLimit, ReasonRateLimited
+		// Return the actual error: ErrLimit if rate limited, context error if canceled
+		if err == ErrLimit {
+			return ErrLimit, ReasonRateLimited
+		}
+		return err, ""
 	}
 
 	// Layer 3: Normal user + not blocked
