@@ -65,18 +65,23 @@ func New(opts ...Option) *Limiter {
 }
 
 // Allow reports whether the request should proceed.
-// Returns true if allowed, false if rate limited.
+// Returns true if allowed, false if blocked.
 func (l *Limiter) Allow(ua, ip string) bool {
 	// Layer 1: Bot verification
 	botResult := l.kb.Validate(ua, ip)
 
 	if botResult.IsBot {
-		if botResult.Status == knownbots.StatusVerified {
+		switch botResult.Status {
+		case knownbots.StatusVerified:
 			// Verified bot: allow without rate limit
 			return true
+		case knownbots.StatusPending:
+			// RDNS lookup failed, allow and retry verification next time
+			return true
+		case knownbots.StatusFailed, knownbots.StatusUnknown:
+			// Fake bot (failed verification) or unknown: block immediately
+			return false
 		}
-		// Fake bot: apply rate limit
-		return l.allowBlocked(ip)
 	}
 
 	// Layer 2: Blocklist check (only for normal users)
@@ -91,17 +96,23 @@ func (l *Limiter) Allow(ua, ip string) bool {
 }
 
 // Wait blocks until the request is allowed or the context is canceled.
+// Returns nil if allowed, error if blocked or context canceled.
 func (l *Limiter) Wait(ctx context.Context, ua, ip string) error {
 	// Layer 1: Bot verification
 	botResult := l.kb.Validate(ua, ip)
 
 	if botResult.IsBot {
-		if botResult.Status == knownbots.StatusVerified {
+		switch botResult.Status {
+		case knownbots.StatusVerified:
 			// Verified bot: no rate limit needed
 			return nil
+		case knownbots.StatusPending:
+			// RDNS lookup failed, allow and retry verification next time
+			return nil
+		case knownbots.StatusFailed, knownbots.StatusUnknown:
+			// Fake bot: block immediately
+			return ErrLimit
 		}
-		// Fake bot: apply rate limit
-		return l.waitBlocked(ctx, ip)
 	}
 
 	// Layer 2: Blocklist check (only for normal users)
@@ -137,7 +148,7 @@ func (l *Limiter) getLimiter(ip string) *rate.Limiter {
 // Close gracefully shuts down the limiter and releases resources.
 func (l *Limiter) Close() {
 	l.analyzer.Close()
-	
+
 	l.blocked.Range(func(key, value any) bool {
 		l.blocked.Delete(key)
 		return true
