@@ -142,9 +142,9 @@ func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Re
 		if err == nil {
 			return nil, ""
 		}
-		// Wait returns error only when rate limited or context canceled.
-		// Both cases mean the request was not allowed.
-		return ErrLimit, ReasonRateLimited
+		// Return the actual error (context canceled/timeout or rate limit),
+		// but reason always indicates rate limiting since the IP is blocked.
+		return err, ReasonRateLimited
 	}
 
 	// Layer 3: Normal user + not blocked
