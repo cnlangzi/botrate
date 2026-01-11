@@ -33,7 +33,7 @@ type Limiter struct {
 }
 
 // New creates a new rate limiter with default config and applies options.
-func New(opts ...Option) *Limiter {
+func New(opts ...Option) (*Limiter, error) {
 	l := &Limiter{
 		cfg: Config{
 			Limit:         DefaultLimit,
@@ -50,7 +50,7 @@ func New(opts ...Option) *Limiter {
 	if l.kb == nil {
 		kb, err := knownbots.New()
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		l.kb = kb
 	}
@@ -61,7 +61,7 @@ func New(opts ...Option) *Limiter {
 		QueueCap:      l.cfg.QueueCap,
 	})
 
-	return l
+	return l, nil
 }
 
 // Allow reports whether the request should proceed.

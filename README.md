@@ -52,7 +52,7 @@ import (
 )
 
 func main() {
-	limiter := botrate.New(
+	limiter, err := botrate.New(
 		// Rate limiting for blacklisted IPs only
 		botrate.WithLimit(rate.Every(10*time.Minute)),
 
@@ -61,22 +61,17 @@ func main() {
 		botrate.WithAnalyzerPageThreshold(50),
 		botrate.WithAnalyzerQueueCap(10000),
 	)
+	if err != nil {
+		log.Fatalf("Failed to create limiter: %v", err)
+	}
 	defer limiter.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ua := r.UserAgent()
 		ip := extractIP(r)
 
-		result := limiter.Allow(ua, ip)
-		if !result.Allowed {
-			switch result.Reason {
-			case "fake bot":
-				http.Error(w, "Bot verification failed", http.StatusForbidden)
-			case "rate limited":
-				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-			default:
-				http.Error(w, "Forbidden", http.StatusForbidden)
-			}
+		if !limiter.Allow(ua, ip) {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
 
@@ -192,7 +187,10 @@ if err != nil {
 Gracefully shuts down the limiter and releases resources. **Always call this when the limiter is no longer needed.**
 
 ```go
-limiter := botrate.New(...)
+limiter, err := botrate.New(...)
+if err != nil {
+    log.Fatalf("Failed to create limiter: %v", err)
+}
 defer limiter.Close()
 ```
 
@@ -301,44 +299,59 @@ if !allowed {
 ### Strict Rate Limiting
 
 ```go
-limiter := botrate.New(
+limiter, err := botrate.New(
 	botrate.WithLimit(rate.Every(10*time.Minute)),
 )
+if err != nil {
+    log.Fatalf("Failed to create limiter: %v", err)
+}
 ```
 
 ### Aggressive Bot Detection
 
 ```go
-limiter := botrate.New(
+limiter, err := botrate.New(
 	botrate.WithAnalyzerWindow(30*time.Second),
 	botrate.WithAnalyzerPageThreshold(20),
 )
+if err != nil {
+    log.Fatalf("Failed to create limiter: %v", err)
+}
 ```
 
 ### High-Throughput Configuration
 
 ```go
-limiter := botrate.New(
+limiter, err := botrate.New(
 	botrate.WithAnalyzerWindow(10*time.Minute),
 	botrate.WithAnalyzerPageThreshold(100),
 	botrate.WithAnalyzerQueueCap(50000),
 )
+if err != nil {
+    log.Fatalf("Failed to create limiter: %v", err)
+}
 ```
 
 ### Custom KnownBots Validator
 
 ```go
 // Create custom validator with specific configuration
-customKB := knownbots.New(
+customKB, err := knownbots.New(
 	knownbots.WithRoot("./custom-bots"),
 	knownbots.WithSchedulerInterval(12*time.Hour),
 )
+if err != nil {
+    log.Fatalf("Failed to create validator: %v", err)
+}
 
 // Use custom validator
-limiter := botrate.New(
+limiter, err := botrate.New(
 	botrate.WithKnownbots(customKB),
 	botrate.WithLimit(rate.Every(5*time.Minute)),
 )
+if err != nil {
+    log.Fatalf("Failed to create limiter: %v", err)
+}
 ```
 
 ## Architecture

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -11,12 +12,16 @@ import (
 )
 
 func main() {
-	limiter := botrate.New(
+	limiter, err := botrate.New(
 		botrate.WithLimit(rate.Every(10*time.Minute)),
 		botrate.WithAnalyzerWindow(time.Minute),
 		botrate.WithAnalyzerPageThreshold(50),
 		botrate.WithAnalyzerQueueCap(10000),
 	)
+	if err != nil {
+		log.Fatalf("Failed to create limiter: %v", err)
+	}
+	defer limiter.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ua := r.UserAgent()
