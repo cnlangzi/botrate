@@ -150,12 +150,18 @@ http.Handle("/", BotRateMiddleware(limiter)(myHandler))
 
 #### `Allow(ua, ip string) bool`
 
-Non-blocking check if the request should proceed. Returns `true` if allowed, `false` if rate limited.
+Non-blocking check if the request should proceed. Returns `true` if allowed, `false` if blocked.
+
+**Bot Detection Logic:**
+- **Verified bot** (StatusVerified): ✅ Allow immediately
+- **RDNS lookup failed** (StatusPending): ✅ Allow, retry verification next time
+- **Fake bot** (StatusFailed): ❌ Block immediately
+- **Normal user**: Continue to analyzer and blocklist check
 
 ```go
 allowed := limiter.Allow(ua, ip)
 if !allowed {
-    // Request was rate limited
+    // Request was blocked (fake bot or blacklisted IP)
 }
 ```
 result := limiter.Allow(ua, ip)
@@ -166,12 +172,18 @@ if !result.Allowed {
 
 #### `Wait(ctx context.Context, ua, ip string) error`
 
-Blocks until the request is allowed or the context ends.
+Blocks until the request is allowed or the context ends. Returns `nil` if allowed, `ErrLimit` if blocked.
+
+**Bot Detection Logic:**
+- **Verified bot** (StatusVerified): ✅ Allow immediately
+- **RDNS lookup failed** (StatusPending): ✅ Allow, retry verification next time
+- **Fake bot** (StatusFailed): ❌ Block immediately
+- **Normal user**: Continue to analyzer and blocklist check
 
 ```go
 err := limiter.Wait(ctx, ua, ip)
 if err != nil {
-	// Handle denial or timeout
+    // Handle denial (ErrLimit) or context cancellation
 }
 ```
 
@@ -194,14 +206,15 @@ Request
 │ 1. KnownBots Verification           │  Hot path: <1μs
 │    - Check if UA matches known bot  │
 │    - Verified → Allow immediately   │
-│    - Fake bot → Rate limit          │
+│    - RDNS failed → Allow, retry     │
+│    - Fake bot → Block immediately   │
 └─────────────────────────────────────┘
   │
-  ▼
+  ▼ (only for normal users)
 ┌─────────────────────────────────────┐
 │ 2. Blocklist Check                  │  Atomic read: <100ns
 │    - Check if IP is blacklisted     │
-│    - Not blocked → Allow            │
+│    - Not blocked → Record + Allow   │
 │    - Blocked → Rate limit           │
 └─────────────────────────────────────┘
   │
@@ -217,11 +230,11 @@ Request
 
 ### Key Design Decisions
 
-1. **Only rate limit blacklisted IPs** - Normal users and verified bots bypass rate limiting entirely
-2. **Async behavior analysis** - Request processing is never blocked by analysis
-3. **Double-buffered Bloom filter** - Zero-drop rotation for seamless window transitions
-4. **LRU counter with O(1) lookup** - Efficient memory usage with fast access
-5. **Copy-on-write blocklist** - Lock-free reads for maximum throughput
+1. **Fake bots blocked immediately** - Known bot UAs with failed verification are blocked without rate limiting
+2. **RDNS lookup failures are tolerated** - Failed DNS lookups allow the request (will retry next time)
+3. **Verified bots bypass everything** - Googlebot, Bingbot, etc. are allowed without rate limiting
+4. **Normal users go through analyzer** - Behavior analysis only applies to regular users
+5. **Async behavior analysis** - Request processing is never blocked by analysis
 
 ## Performance
 
@@ -257,20 +270,29 @@ Check errors with:
 
 ```go
 if errors.Is(err, botrate.ErrLimit) {
-	// Request was denied by rate limit
+    // Request was denied (fake bot or blacklisted IP)
 }
 ```
 
-### Result Handling
+### Denial Reasons
 
-`Allow()` returns `bool` (true = allowed, false = rate limited).
+`Allow()` returns `false` when:
+
+1. **Fake bot** - Known bot UA (e.g., "GPTBot") but IP verification failed
+2. **Blacklisted IP** - IP was flagged by behavior analysis
+
+`Wait()` returns `ErrLimit` when:
+
+1. **Fake bot** - Blocked immediately
+2. **Rate limited** - Normal user on blocklist hitting rate limit
 
 ```go
 allowed := limiter.Allow(ua, ip)
 
 if !allowed {
-    // Request was denied by rate limiter
-    // Use Wait() for blocking behavior or handle immediately
+    // Request was denied
+    // - Fake bot: blocked immediately
+    // - Blacklisted IP: rate limited
 }
 ```
 
