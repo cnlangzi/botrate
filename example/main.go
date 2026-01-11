@@ -27,7 +27,8 @@ func main() {
 		ua := r.UserAgent()
 		ip := extractIP(r)
 
-		if !limiter.Allow(ua, ip) {
+		allowed, _ := limiter.Allow(ua, ip)
+		if !allowed {
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
