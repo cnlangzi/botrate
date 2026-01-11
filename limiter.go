@@ -48,10 +48,8 @@ func New(opts ...Option) *Limiter {
 	}
 
 	if l.kb == nil {
-		kb, err := knownbots.New()
-		if err != nil {
-			panic(err)
-		}
+		// Use default validator, ignore errors (will log at debug level)
+		kb, _ := knownbots.New()
 		l.kb = kb
 	}
 
