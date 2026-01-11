@@ -2,6 +2,7 @@ package botrate
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -142,10 +143,10 @@ func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Re
 		if err == nil {
 			return nil, ""
 		}
-		// Return the actual error: ErrLimit if rate limited, context error if canceled
-		if err == ErrLimit {
+		if errors.Is(err, ErrLimit) {
 			return ErrLimit, ReasonRateLimited
 		}
+		// For context cancellation / timeout, propagate original error
 		return err, ""
 	}
 
