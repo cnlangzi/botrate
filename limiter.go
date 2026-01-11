@@ -115,8 +115,8 @@ func (l *Limiter) Allow(ua, ip string) (allowed bool, reason Reason) {
 
 // Wait blocks until the request is allowed or the context is canceled.
 // Returns:
-//   - err: nil if allowed, ErrLimit if blocked or context canceled
-//   - reason: the reason for blocking when err is ErrLimit
+//   - err: nil if allowed, otherwise the blocking error (context canceled/timeout or ErrLimit)
+//   - reason: the reason for blocking (ReasonFakeBot or ReasonRateLimited)
 func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Reason) {
 	// Layer 1: Bot verification
 	botResult := l.kb.Validate(ua, ip)
@@ -139,12 +139,12 @@ func (l *Limiter) Wait(ctx context.Context, ua, ip string) (err error, reason Re
 	if l.analyzer.Blocked(ip) {
 		// Behavior anomaly: apply rate limit
 		err = l.waitBlocked(ctx, ip)
-		if err == nil {
-			return nil, ""
+		if err != nil {
+			// Context canceled/timeout while waiting
+			return err, ReasonRateLimited
 		}
-		// Return the actual error (context canceled/timeout or rate limit),
-		// but reason always indicates rate limiting since the IP is blocked.
-		return err, ReasonRateLimited
+		// Rate limit hit (wait returned without error but context still active)
+		return ErrLimit, ReasonRateLimited
 	}
 
 	// Layer 3: Normal user + not blocked
